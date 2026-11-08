@@ -50,6 +50,21 @@ def member(value):
         value.get("status") == "restricted" and value.get("is_member", False))
 
 
+def setup_menu(api, admin_id):
+    """Install quick commands only in the administrator's private chat."""
+    commands = [
+        {"command": "chats", "description": "Мои чаты"},
+        {"command": "connect", "description": "Подключить чат / канал"},
+        {"command": "check", "description": "Проверить права бота"},
+        {"command": "setlink", "description": "Задать ссылку на чат"},
+        {"command": "help", "description": "Помощь"},
+    ]
+    api.call("setMyCommands", commands=commands,
+             scope={"type": "chat", "chat_id": admin_id})
+    api.call("setChatMenuButton", chat_id=admin_id,
+             menu_button={"type": "commands"})
+
+
 class Monitor:
     def __init__(self, api, admin_id, database):
         self.api = api
@@ -122,6 +137,8 @@ class Monitor:
     def command(self, text):
         args = text.split()
         command = args[0].split("@")[0] if args else ""
+        if command == "/connect" and len(args) == 1:
+            command = "/help"  # Show connection buttons when selected in Menu.
         if command in ("/connect", "/check"):
             if len(args) != 2:
                 self.enqueue("Пришлите /connect @имя_канала или /check -1001234567890. "
@@ -161,7 +178,8 @@ class Monitor:
                     [{"text": "Подключить группу", "url": f"https://t.me/{username}?startgroup&admin=invite_users"}]]}
             except APIError:
                 pass
-            self.enqueue("Бот уведомляет о вступлениях только вас.\n\n"
+            self.enqueue("Бот уведомляет о вступлениях только вас.\n"
+                         "Быстрый доступ к командам — кнопка «Меню» возле строки ввода.\n\n"
                          "Для канала нажмите «Подключить канал» ниже. В списке будут каналы, "
                          "где вы можете назначать администраторов. Или откройте канал → Управление → "
                          "Администраторы → Добавить администратора и найдите бота по @username.\n\n"
@@ -285,7 +303,18 @@ def main():
         monitor = Monitor(api, admin, data / "monitor.sqlite3")
         print(f"Бот @{me['username']} работает. Получатель: {admin}. Остановка: Ctrl+C.")
         print("Откройте бота со своего аккаунта и нажмите «Запустить».")
+        menu_ready = False
+        menu_retry_at = 0
         while True:
+            if not menu_ready and time.monotonic() >= menu_retry_at:
+                try:
+                    setup_menu(api, admin)
+                    menu_ready = True
+                    LOG.info("Меню быстрого доступа включено для администратора.")
+                except APIError as exc:
+                    # An unopened private chat or API outage must not stop monitoring.
+                    menu_retry_at = time.monotonic() + max(60, exc.retry_after)
+                    LOG.warning("Не удалось настроить меню (код %s). Повтор позже; откройте личный чат с ботом.", exc.code)
             try:
                 monitor.drain()
                 for update in api.call("getUpdates", offset=monitor.offset(), timeout=5,
